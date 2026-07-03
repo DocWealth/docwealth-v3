@@ -1222,7 +1222,7 @@
       async function checkPortalStatus() {
         if (!PORTAL_CLIENT_ID || !PORTAL_TOKEN) return { ok: true, status: "Open" };
         try {
-          const response = await fetch("http://localhost:3000/api/portal-status?clientId=" + encodeURIComponent(PORTAL_CLIENT_ID) + "&token=" + encodeURIComponent(PORTAL_TOKEN));
+          const response = await fetch("https://docwealth-backend.onrender.com/api/portal-status?clientId=" + encodeURIComponent(PORTAL_CLIENT_ID) + "&token=" + encodeURIComponent(PORTAL_TOKEN));
           return await response.json();
         } catch {
           return { ok: true, status: "Open" };
@@ -1279,7 +1279,7 @@ state.clientId = PORTAL_CLIENT_ID || state.clientId || state.confirmationNumber;
 state.portalToken = PORTAL_TOKEN || state.portalToken || "";
 
 try {
-  const response = await fetch("http://localhost:3000/api/portal-submit", {
+  const response = await fetch("https://docwealth-backend.onrender.com/api/portal-submit", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
