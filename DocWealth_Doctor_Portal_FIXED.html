@@ -383,8 +383,14 @@
       }
 
       function startupState() {
+        /* DATA LOSS FIX. This used to return initialState() whenever the draft was not yet
+           submitted, leaving a BLANK state in memory while the real answers sat in
+           localStorage. Any Back / Save Draft / Save & Continue then called saveNow() and
+           overwrote the draft with the blank one. Always boot from the saved answers. */
         const saved = loadState();
-        return saved.submittedAt ? saved : initialState();
+        if (saved.submittedAt) return saved;
+        if (saved.started) return saved;
+        return initialState();
       }
 
       function hasSavedDraft() {
@@ -393,6 +399,20 @@
       }
 
       function saveNow() {
+        /* Safety net: refuse to write an unstarted, empty state over a draft that has
+           real answers in it. Losing a doctor's 25 minutes of typing is unacceptable. */
+        try {
+          if (!state.started) {
+            const existing = localStorage.getItem(STORAGE_KEY);
+            if (existing) {
+              const parsed = JSON.parse(existing);
+              if (parsed && parsed.started) {
+                console.warn("[DocWealth Portal] refused to overwrite a saved draft with an empty state");
+                return;
+              }
+            }
+          }
+        } catch (error) { /* fall through and save normally */ }
         state.lastSavedAt = new Date().toISOString();
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
         hasUnsavedChanges = false;
@@ -505,14 +525,17 @@
       }
 
       function getFamilyMembers() {
+        /* Names typed with a stray trailing space ("siddu ") used to build an option that
+           could never match the trimmed stored value, so a correctly chosen dropdown showed
+           "Choose from the list". Trim at the source. */
         const family = state.sections.family_profile;
-        return ((family && family.rows) || []).map((row) => row.full_name).filter(Boolean);
+        return ((family && family.rows) || []).map((row) => String(row.full_name || "").trim()).filter(Boolean);
       }
 
       function getAssets() {
         const assets = state.sections.assets_investments;
         return ((assets && assets.rows) || [])
-          .map((row) => row.instrument_identifier_name_isin_folio || row.product_sub_category || row.asset_class)
+          .map((row) => String(row.instrument_identifier_name_isin_folio || row.product_sub_category || row.asset_class || "").trim())
           .filter(Boolean);
       }
 
@@ -751,7 +774,9 @@
           }
         }
         const options = getFieldOptions(field, context);
-        if (field.type === "select" && field.key !== "primary_hospital_institution" && options.length && !options.includes(text)) return "Choose from the list";
+        /* compare trimmed on BOTH sides: records saved before this fix may still hold "siddu " */
+        const trimmedOptions = options.map(function (option) { return String(option == null ? "" : option).trim(); });
+        if (field.type === "select" && field.key !== "primary_hospital_institution" && trimmedOptions.length && !trimmedOptions.includes(text)) return "Choose from the list";
         return "";
       }
 
@@ -911,7 +936,7 @@
               control = inputAndList;
             }
           } else {
-            control = `<select class="${invalidClass.trim()}"${errorAttr} data-path="${path}" data-required-field="${fieldRequired(field) ? "true" : "false"}"><option value="">Select</option>${options.map((option) => `<option value="${escapeHtml(option)}" ${option === value ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}</select>`;
+            control = `<select class="${invalidClass.trim()}"${errorAttr} data-path="${path}" data-required-field="${fieldRequired(field) ? "true" : "false"}"><option value="">Select</option>${options.map((option) => `<option value="${escapeHtml(option)}" ${String(option == null ? "" : option).trim() === String(value == null ? "" : value).trim() ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}</select>`;
           }
         } else if (field.type === "textarea") {
           control = `<textarea class="${invalidClass.trim()}"${errorAttr} data-path="${path}" data-required-field="${fieldRequired(field) ? "true" : "false"}">${escapeHtml(value || "")}</textarea>`;
@@ -1406,6 +1431,10 @@ try {
         document.querySelectorAll("[data-action]").forEach((element) => element.addEventListener("click", (event) => { event.preventDefault();
           const action = element.dataset.action;
           if (action === "start") {
+            /* This silently erased an in-progress draft. Ask first. */
+            if (hasSavedDraft() && !confirm("You already have answers saved on this device.\n\nStarting again will erase them.\n\nOK = start fresh\nCancel = keep my saved answers")) {
+              return;
+            }
             state = initialState();
             state.started = true;
             state.currentSectionId = WORKBOOK_SCHEMA.sections[0].id;
