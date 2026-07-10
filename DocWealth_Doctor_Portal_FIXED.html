@@ -228,7 +228,7 @@
       const PORTAL_TOKEN = PORTAL_PARAMS.get("token") || "";
       const STORAGE_KEY = "docwealth_single_file_portal_draft_v2_fixed_" + (PORTAL_CLIENT_ID || "default") + "_" + (PORTAL_TOKEN || "notoken");
       const SERVICE_IDS = ["work_contract_analysis", "career_mentoring", "tax_audit_services", "clinic_financial_analysis", "doctor_compensation_tool"];
-      const MAX_UPLOAD_SIZE = 20 * 1024 * 1024;
+      const MAX_UPLOAD_SIZE = 5 * 1024 * 1024;   /* 5 MB: base64 inflates ~33%, and the server body limit is 25 MB */
       const ALLOWED_UPLOAD_TYPES = ["pdf", "jpg", "jpeg", "png", "webp", "doc", "docx", "xls", "xlsx", "csv"];
       const VIDEO_ICON_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"></path></svg>';
       const app = document.getElementById("app");
@@ -917,11 +917,11 @@
           control = `<textarea class="${invalidClass.trim()}"${errorAttr} data-path="${path}" data-required-field="${fieldRequired(field) ? "true" : "false"}">${escapeHtml(value || "")}</textarea>`;
         } else if (field.type === "file") {
           const files = (value && value.files) || [];
-          control = `<div class="upload-control${invalidClass}"${errorAttr} data-drop-path="${path}">
+          control = `<div class="upload-control${invalidClass}"${errorAttr} data-drop-path="${path}" data-section="${sectionId}" data-field="${field.key}">
             <div class="help"><strong>Secure Document Vault</strong></div>
             <div class="help">Securely upload supporting documents or drag and drop files here.</div>
             <div class="help">Upload supporting documents instead of manually entering repetitive details wherever applicable.</div>
-            <div class="help">Allowed formats: PDF, JPG, JPEG, PNG, WEBP, DOC, DOCX, XLS, XLSX, CSV. Maximum size: 20 MB per file.</div>
+            <div class="help">Allowed formats: PDF, JPG, JPEG, PNG, WEBP, DOC, DOCX, XLS, XLSX, CSV. Maximum size: 5 MB per file.</div>
             <label class="secondary">Upload<input hidden type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx,.xls,.xlsx,.csv" data-file-path="${path}" data-section="${sectionId}" data-field="${field.key}"></label>
             ${files.length ? `<button type="button" class="ghost" data-clear-files="${path}">Replace uploads</button>` : ""}
             ${field.acceptsPassword ? `<input placeholder="Document password, if any" value="${escapeHtml((value && value.password) || "")}" data-upload-password="${path}" data-required-field="false">` : ""}
@@ -1192,19 +1192,83 @@
         return message;
       }
 
-      function addAcceptedFiles(path, fileList) {
+      function addAcceptedFiles(path, fileList, sectionId, fieldKey) {
         const current = getPath(path) || { files: [], password: "" };
         const accepted = [];
         const rejected = [];
         Array.from(fileList || []).forEach((file) => {
           const ext = (file.name.split(".").pop() || "").toLowerCase();
           if (!ALLOWED_UPLOAD_TYPES.includes(ext)) rejected.push(file.name + " has an unsupported file type.");
-          else if (file.size > MAX_UPLOAD_SIZE) rejected.push(file.name + " is larger than 20 MB.");
+          else if (file.size > MAX_UPLOAD_SIZE) rejected.push(file.name + " is " + Math.round(file.size/1048576) + " MB. The limit is 5 MB per file. Please compress it or email it to DocWealth.");
           else accepted.push(file);
         });
         if (rejected.length) alert(rejected.join("\n"));
-        const files = accepted.map((file) => ({ id: file.name + "-" + file.size + "-" + Date.now() + "-" + Math.random().toString(16).slice(2), name: file.name, size: file.size, type: file.type || "Unknown", addedAt: new Date().toISOString(), status: "Uploaded" }));
+        /* The old code stopped here: it recorded name/size and hard-coded status "Uploaded",
+           without ever reading the file or sending it anywhere. The doctor's documents never
+           left their laptop. Now each accepted file is read, base64-encoded and POSTed to
+           /api/portal-upload, and its status reflects what actually happened. */
+        const files = accepted.map((file) => ({
+          id: file.name + "-" + file.size + "-" + Date.now() + "-" + Math.random().toString(16).slice(2),
+          name: file.name, size: file.size, type: file.type || "Unknown",
+          addedAt: new Date().toISOString(), status: "Uploading"
+        }));
         setPath(path, { ...current, files: current.files.concat(files) });
+        accepted.forEach((file, index) => dwUploadOneFile(path, files[index].id, file, sectionId, fieldKey));
+      }
+
+      function dwReadAsBase64(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = String(reader.result || "");
+            const comma = result.indexOf(",");
+            resolve(comma === -1 ? result : result.slice(comma + 1));
+          };
+          reader.onerror = () => reject(new Error("Could not read " + file.name));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      function dwSetFileStatus(path, fileId, status, extra) {
+        const current = getPath(path);
+        if (!current || !current.files) return;
+        const files = current.files.map((f) => (f.id === fileId ? { ...f, status: status, ...(extra || {}) } : f));
+        setPath(path, { ...current, files: files });
+        saveNow(); render();
+      }
+
+      async function dwUploadOneFile(path, fileId, file, sectionId, fieldKey) {
+        try {
+          const dataBase64 = await dwReadAsBase64(file);
+          const response = await fetch("https://docwealth-backend.onrender.com/api/portal-upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              clientId: PORTAL_CLIENT_ID || state.clientId || "",
+              portalToken: PORTAL_TOKEN || state.portalToken || "",
+              section: sectionId || "",
+              documentType: fieldKey || "",
+              fileName: file.name,
+              mimeType: file.type || "application/octet-stream",
+              dataBase64: dataBase64
+            })
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok || !result.ok) {
+            const reason = result.error === "file_too_large" ? "File is larger than 5 MB."
+              : result.error === "file_type_not_allowed" ? "That file type is not accepted."
+              : result.error === "unauthorized" ? "This portal link is not recognised. Please contact DocWealth."
+              : "Upload failed. Please try again.";
+            dwSetFileStatus(path, fileId, "Failed", { error: reason });
+            showToast(file.name + ": " + reason);
+            return;
+          }
+          dwSetFileStatus(path, fileId, "Uploaded", { recordId: result.recordId });
+          showToast(file.name + " uploaded securely");
+        } catch (error) {
+          dwSetFileStatus(path, fileId, "Failed", { error: "Could not reach DocWealth. Check your connection." });
+          showToast(file.name + ": upload failed");
+        }
       }
 
       function completeAndNext() {
@@ -1432,8 +1496,8 @@ try {
           });
         });
         document.querySelectorAll("[data-file-path]").forEach((element) => element.addEventListener("change", () => {
-          addAcceptedFiles(element.dataset.filePath, element.files);
-          saveNow(); render(); showToast("Document Uploaded");
+          addAcceptedFiles(element.dataset.filePath, element.files, element.dataset.section, element.dataset.field);
+          saveNow(); render();   /* the toast now comes from dwUploadOneFile, once the file has actually been sent */
         }));
         document.querySelectorAll("[data-drop-path]").forEach((element) => {
           element.addEventListener("dragover", (event) => { event.preventDefault(); element.classList.add("dragging"); });
@@ -1441,8 +1505,8 @@ try {
           element.addEventListener("drop", (event) => {
             event.preventDefault();
             element.classList.remove("dragging");
-            addAcceptedFiles(element.dataset.dropPath, event.dataTransfer.files);
-            saveNow(); render(); showToast("Document Uploaded");
+            addAcceptedFiles(element.dataset.dropPath, event.dataTransfer.files, element.dataset.section, element.dataset.field);
+            saveNow(); render();   /* toast comes from dwUploadOneFile once the file is really sent */
           });
         });
         document.querySelectorAll("[data-upload-password]").forEach((element) => element.addEventListener("input", () => {
