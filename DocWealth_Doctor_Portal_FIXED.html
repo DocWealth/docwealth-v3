@@ -1336,11 +1336,21 @@
           const result = await response.json();
           const remote = result && result.ok ? result.portalData : null;
           if (!remote || typeof remote !== "object") return;   /* nothing submitted before — normal blank form */
-          state = Object.assign(initialState(), remote, {
-            clientId: PORTAL_CLIENT_ID,
-            portalToken: PORTAL_TOKEN,
-            started: true
+          /* The server's normalizePortalData() unwraps the full state and returns
+             just the sections object (keys like welcome, family_profile, income…).
+             Place it back inside state.sections where the form expects it. */
+          var fresh = initialState();
+          fresh.sections = Object.assign(fresh.sections, remote);
+          fresh.clientId = PORTAL_CLIENT_ID;
+          fresh.portalToken = PORTAL_TOKEN;
+          fresh.started = true;
+          /* Mark sections that have real data as completed so the sidebar reflects it */
+          WORKBOOK_SCHEMA.sections.forEach(function(sec) {
+            if (remote[sec.id] && JSON.stringify(remote[sec.id]) !== JSON.stringify(fresh.sections[sec.id])) {
+              if (fresh.completed.indexOf(sec.id) === -1) fresh.completed.push(sec.id);
+            }
           });
+          state = fresh;
           saveNow();
           render();
         } catch {
