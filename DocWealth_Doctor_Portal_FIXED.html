@@ -1330,7 +1330,7 @@
          saved on this device — it never overwrites a draft someone is mid-typing. */
       async function hydrateFromServerIfNeeded() {
         if (!PORTAL_CLIENT_ID || !PORTAL_TOKEN) return;
-        if (state.started) return;   /* this device already has something — leave it alone */
+        if (state.submittedAt) return;   /* this device already has a completed submission — leave it alone */
         try {
           const response = await fetch("https://docwealth-backend.onrender.com/api/portal-data?clientId=" + encodeURIComponent(PORTAL_CLIENT_ID) + "&token=" + encodeURIComponent(PORTAL_TOKEN));
           const result = await response.json();
